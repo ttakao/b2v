@@ -1,0 +1,13 @@
+# mac
+.DS_Store
+# python
+.venv/
+__pycache__/
+.pytest_cache/
+# local runtime
+.env
+logs/
+run/
+work/
+# tyle-Bert
+stylebert/

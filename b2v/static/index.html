@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>b2v | PDF オーディオブック変換</title><link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script><script src="/static/crop.js" defer></script><script src="/static/tts.js" defer></script></head>
+<body><main><header><span class="logo">b2v<span> / book to voice</span></span><span class="badge">LOCAL</span></header>
+<section class="intro"><p class="eyebrow">あなたの本を、聴く体験へ。</p><h1>PDF オーディオブック変換</h1><p>日本語の文章表現を大切にする、ローカル朗読システム。</p></section>
+<div class="notice"><strong>OCRから、朗読用テキストへ。</strong><br>PDFをOCRし、空白を整理した本文を作ります。品質一覧で選んだページをローカルLLMで校正し、原画像と本文を見比べて編集できます。確定した本文からStyle-BertでWAV音声を生成できます。書籍データは外部へ送信しません。</div>
+<section class="panel"><h2>1. PDFを選択（1冊）</h2><form id="upload"><label class="filebox" id="dropzone" for="files"><strong>PDFをここにドラッグ＆ドロップ</strong><span>クリックして選択もできます · 1冊ずつ · 最大512MB</span><input id="files" type="file" name="files" accept=".pdf,application/pdf" required></label><p id="selection" role="status" aria-live="polite">ファイル未選択</p>
+<section id="crop-editor" class="workflow-step">
+<h2>2. ページを見てcropを調整</h2>
+<p class="muted">枠の内側がOCR対象、暗い外側が除去範囲です。上・下・左・右の数値はページ全体から除去する割合です。この本の全対象ページに同じcropを適用します。</p>
+<label>確認するPDF<select id="preview-book" disabled></select></label>
+<p id="crop-message" role="status">PDFを選択するとプレビューを表示します。</p>
+<div id="crop-stage" hidden><img id="crop-image" alt="PDFページ全体のcropプレビュー" draggable="false"><div id="crop-rectangle"><span>OCR対象</span><button type="button" data-edge="top" aria-label="上の境界をドラッグ"></button><button type="button" data-edge="bottom" aria-label="下の境界をドラッグ"></button><button type="button" data-edge="left" aria-label="左の境界をドラッグ"></button><button type="button" data-edge="right" aria-label="右の境界をドラッグ"></button></div></div>
+<div class="preview-navigation"><button type="button" id="preview-prev" class="secondary">前ページ</button><label>PDFページ<input id="preview-page" type="number" min="1" value="1"></label><span id="preview-count"></span><button type="button" id="preview-next" class="secondary">次ページ</button><button type="button" id="preview-go" class="secondary">表示</button></div>
+<div class="links"><button type="button" data-jump="front" class="secondary">前方</button><button type="button" data-jump="middle" class="secondary">中央</button><button type="button" data-jump="back" class="secondary">後方</button></div>
+<div class="settings crop">
+<label>上（%）<input name="top" type="number" min="0" max="30" step="0.1" value="3" required></label>
+<label>下（%）<input name="bottom" type="number" min="0" max="30" step="0.1" value="3" required></label>
+<label>左（%）<input name="left" type="number" min="0" max="30" step="0.1" value="3" required></label>
+<label>右（%）<input name="right" type="number" min="0" max="30" step="0.1" value="3" required></label>
+</div><p class="muted">初期値は各辺3%。既存処理に合わせ各辺0〜30%です。奇数・偶数ページでも本文が枠内に残るか確認してください。</p>
+<button id="crop-confirm" type="button" disabled>このcropを使用</button><p id="crop-confirmation" role="status">cropは未確定です。</p></section>
+<h2>3. OCRを設定して開始</h2>
+<div class="settings">
+<label>処理するPDFページ<input name="pages" placeholder="空欄：全ページ ／ 例：5-20,23"></label>
+<label>除外するPDFページ<input name="exclude_pages" placeholder="例：1-4,21-22"></label>
+</div><p class="muted">PDFの先頭を1とした番号です。紙面に印刷されたページ番号とは異なります。</p>
+<input type="hidden" name="mode" value="ocr"><p id="ocr-health" role="status">OCR環境を確認中…</p><div class="settings"><label>基本方向<select name="direction"><option value="vertical">縦書き</option><option value="horizontal">横書き</option><option value="auto">自動</option></select></label></div><p class="muted">書字方向判定confidenceが高いページだけ自動判定で上書きします。判定できないページは基本方向を使用（「自動」は縦書きに戻ります）。</p>
+<details><summary>OCR詳細設定・ページ別方向</summary><div class="settings">
+<label>横書きとして固定するページ<input name="horizontal_pages" placeholder="例：10,12"></label>
+<label>縦書きとして固定するページ<input name="vertical_pages" placeholder="例：11"></label>
+<label>横書きOCR方式<select name="horizontal_mode"><option value="blocks">ブロック処理（行ごと）</option><option value="page">ページ全体（従来方式）</option></select></label></div><p class="muted">ページ別の方向指定は自動判定より優先します。横書きは文字領域を行ごとに切り出し、上から順に読み取ります。</p><div class="settings">
+<label>解像度（dpi）<input name="dpi" type="number" min="100" max="400" value="300" required></label>
+<label>書字方向判定confidence閾値<input name="threshold" type="number" min="0.5" max="1" step="0.05" value="0.75" required></label>
+</div></details><button id="start" type="submit" disabled>OCRを開始</button><p id="message" role="status" aria-live="polite"></p></form></section>
+<section class="panel"><h2>文書・ファイル管理</h2><p>1冊のPDF・OCR・テキスト・音声を関連付けます。削除は指定した種類だけに適用します。</p><p id="storage-paths" class="muted">保存先を取得中…</p><div class="table-scroll"><table><thead><tr><th>文書</th><th>処理状況</th><th>PDF</th><th>OCR</th><th>テキスト</th><th>音声</th><th>操作</th></tr></thead><tbody id="documents"></tbody></table></div><input type="file" id="replace-pdf" accept=".pdf" hidden></section>
+<section class="panel" id="quality-panel"><h2>4. OCR品質・確認候補</h2><p id="current-document">文書管理から本を選択してください。</p><p>OCR confidenceは正読率ではありません。同じ本の確認候補を探すための参考値です。</p><div class="settings"><label>OCR品質 下位（%）<input id="percentile" type="number" min="1" max="100" value="10"></label><label>最低認識単位数<input id="minimum" type="number" min="1" value="20"></label><button id="recalculate" type="button">候補を再計算</button></div><details><summary>confidence集計設定</summary><div class="settings"><label>低confidence未満<input id="low-threshold" type="number" min="0" max="100" value="50"></label><label>非常に低いconfidence未満<input id="very-low-threshold" type="number" min="0" max="100" value="20"></label></div></details><p id="quality-summary"></p><div class="settings"><label>表示<select id="page-filter"><option value="all">全ページ</option><option value="candidate">要確認候補</option><option value="unchecked">未確認の候補</option><option value="REVIEW">低confidenceの候補</option><option value="LOW_TEXT">低文字量</option><option value="UNAVAILABLE">評価不能</option><option value="human">人間保存あり</option><option value="excluded">除外ページ</option></select></label><label>並び順<select id="page-sort"><option value="page">PDFページ順</option><option value="confidence">OCR confidence昇順</option></select></label></div><div class="table-scroll"><table><thead><tr><th>PDFページ</th><th>OCR平均</th><th>低confidence率</th><th>認識単位</th><th>要確認理由</th><th>人間確認</th><th>LLM実施</th><th>本文採否</th><th>LLM選択</th></tr></thead><tbody id="quality-pages"></tbody></table></div></section>
+<section class="panel"><h2>5. 選択ページのLLM校正</h2><p>選択ページの現在のテキストを校正します。人間校正済み・LLM実施済みでも、押すたびに再処理します。</p>
+<form id="llm-settings"><details><summary>LLM設定・変換プロンプト</summary><div class="settings">
+<label>接続先<input name="endpoint" value="" required></label>
+<label>モデル名<input name="model" value="b2v-qwen3" required></label>
+<label>Temperature<input name="temperature" type="number" min="0" max="1" step="0.05" value="0.2" required></label>
+<label>chunk上限（文字）<input name="chunk_chars" type="number" min="200" max="1500" value="1000" required></label>
+<label>前後文脈（各文字）<input name="context_chars" type="number" min="0" max="300" value="150" required></label></div>
+<label>変換プロンプト<textarea name="prompt" id="llm-prompt" rows="12" maxlength="4000" required></textarea></label><p class="muted">Thinkingは無効。現在の設定で選択ページを処理します。</p></details>
+<button type="button" id="llm-check" class="secondary">LLM接続確認</button><span id="llm-health" role="status"></span></form><button id="run-llm" type="button">LLMによる自動校正</button><p id="llm-targets"></p></section>
+<section class="panel"><h2>6. 画像を見ながら本文を校正</h2><p>品質一覧のPDFページ番号を押すと、原画像と現在のテキストを表示します。編集して保存した本文が次回LLMの入力になります。</p><div id="review" hidden><div class="review-navigation"><button type="button" id="review-prev" class="secondary">前へ</button><strong id="review-title"></strong><button type="button" id="review-next" class="secondary">次へ</button></div><p id="review-info"></p><div class="review-columns"><div><img id="review-image" alt="OCRで使用したcrop後のPDFページ"><p id="review-image-message"></p></div><label>現在のテキスト<textarea id="review-text" rows="25"></textarea></label></div><div class="links"><button id="save-page" type="button">本文を保存・確認済みにする</button><button id="check-page" type="button" class="secondary">変更なしで確認済みにする</button><button id="exclude-page" type="button" class="secondary">ページを除外</button></div><p id="review-message"></p><p id="review-low"></p></div></section>
+<section class="panel" id="final-panel"><h2>7. 最終テキスト</h2><p>保存済みの校正本文をPDFページ順にまとめ、除外ページを省いたTXTファイルを作ります。</p><p id="final-status" role="status">文書管理から本を選択してください。</p><div class="links"><button id="finalize" type="button" disabled>最終テキストを生成</button><a id="final-download" hidden>テキストを保存</a></div><p id="document-message" role="status"></p></section>
+<section class="panel" id="tts-panel">
+<h2>8. WAV音声を生成</h2>
+<p id="tts-document">文書・ファイル管理から、音声化する本を選択してください。</p>
+<div class="links"><button type="button" id="tts-connect" class="secondary">Style-Bert接続確認・モデル再取得</button><span id="tts-health" role="status">接続確認中…</span></div>
+<form id="tts-form"><fieldset id="tts-fields" disabled>
+<div class="settings">
+<label>Model<select name="model_id" id="tts-model" required></select></label>
+<label>Voice / Speaker<select name="speaker_id" id="tts-speaker" required></select></label>
+<label>Style<select name="style" id="tts-style" required></select></label>
+</div>
+<div class="settings">
+<label>Style Weight<input id="tts-weight-range" type="range" min="0" max="2" step="0.05" value="1" aria-label="Style Weight スライダー"><input id="tts-weight" name="style_weight" type="number" min="0" max="2" step="0.05" value="1" required aria-label="Style Weight 数値"></label>
+<label>Speed（倍速）<input id="tts-speed-range" type="range" min="0.5" max="2" step="0.05" value="1" aria-label="Speed スライダー"><input id="tts-speed" name="speed" type="number" min="0.5" max="2" step="0.05" value="1" required aria-label="Speed 数値"></label>
+</div>
+<details><summary>Advanced — 音声の詳細設定</summary><div class="settings">
+<label>Noise<input name="noise" type="number" min="0" max="1" step="0.05" value="0.6" required></label>
+<label>SDP Noise<input name="noise_w" type="number" min="0" max="1" step="0.05" value="0.8" required></label>
+<label>Pitch<input name="pitch_scale" type="number" min="0.5" max="2" step="0.05" value="1" required></label>
+<label>Intonation<input name="intonation_scale" type="number" min="0" max="2" step="0.05" value="1" required></label>
+</div></details>
+<div class="notice"><strong>短い文章で音声設定を試す</strong><p>本を選ばずに試聴できます。上の設定が適用されます。抑揚を弱めるにはAdvancedのIntonationを1.0から0.9、0.8などへ下げて比較してください。</p><label for="tts-audition-text">試聴する文章（最大150文字）</label><textarea id="tts-audition-text" rows="4" maxlength="150">朝の光が窓から差し込み、静かな部屋を明るく照らしていました。私は読みかけの本を開き、昨日の続きを読み始めます。遠くから鳥の声が聞こえ、ゆっくりと一日が動き出しました。</textarea><button type="button" id="tts-audition">この設定で試聴音声を生成</button></div>
+<details class="tts-chunk-settings"><summary>処理設定（通常は変更不要）</summary><label>最大chunk文字数<input name="max_chunk_chars" id="tts-max-chars" type="number" min="50" max="300" value="300" required aria-describedby="tts-chunk-note"></label><p id="tts-chunk-note"><strong>通常は300のまま使用してください。</strong> 声質の調整ではなく、一度に音声化する本文の分割上限です。小さくすると分割数が増え、変更すると保存済みchunkを再利用できず、再生成になります。途中再開時は変更しないでください。300文字を超える設定には対応していません。</p></details>
+<p class="muted">最終TXTだけを音声化します。文の途中で切らず、最大文字数を超える長文は修正箇所を表示します。</p>
+<div class="links"><button type="submit" id="tts-generate">WAVを生成</button><button type="button" id="tts-save" class="secondary">音声設定を保存</button></div>
+</fieldset></form><p id="tts-audition-message" role="status"></p><audio id="tts-audition-audio" aria-label="設定確認用の試聴音声" controls hidden></audio>
+<p id="tts-message" role="status" aria-live="polite"></p><div id="tts-progress-panel" class="tts-progress-panel" hidden><div class="tts-progress-heading"><strong>WAV生成の進捗</strong><strong id="tts-progress-percent">0%</strong></div><progress id="tts-progress" max="1" value="0" aria-label="音声化したchunkの割合"></progress><div class="tts-progress-stats"><span id="tts-progress-count"></span><span id="tts-progress-elapsed"></span><span id="tts-progress-remaining"></span></div><p class="muted">割合はchunk数の進捗です。残り時間は今回の生成実績に基づく概算で、最後のWAV結合時間は含みません。</p></div><button type="button" id="tts-stop" class="secondary" hidden>現在のchunkが終わったら停止</button><div id="tts-long" hidden><p id="tts-long-info"></p><pre id="tts-long-text"></pre><button type="button" id="tts-review" class="secondary">該当ページを校正</button></div>
+<div id="tts-result" hidden><p>完成WAVを用意しました。次のMP3生成へ進めます。</p></div>
+</section><section class="panel" id="mp3-panel"><h2>9. MP3を生成</h2><p>96 kbps / mono。完成後にWAVとchunkを自動削除します。</p><button id="mp3-generate" disabled>MP3を生成</button><p id="mp3-message" role="status"></p><div id="mp3-result" hidden><p id="mp3-info"></p><audio id="mp3-audio" aria-label="完成したMP3音声" controls preload="metadata"></audio><div class="links"><a id="mp3-download">MP3をダウンロード</a><button id="mp3-delete" class="danger">MP3を削除</button></div></div>
+</section>
+<footer>処理も保存も、このPCで。 / b2v</footer></main></body></html>
