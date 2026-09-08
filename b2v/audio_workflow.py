@@ -197,8 +197,33 @@ class AudioWorkflow:
         with path.open('a',encoding='utf-8') as out:
             out.write(json.dumps({'timestamp':now(),**info},ensure_ascii=False)+'\n')
 
+    def failure_context(self, ident, text, chunk):
+        context={'chunk':chunk['index'],'text':text[chunk['start']:chunk['end']],'pages':[]}
+        cursor=0
+        for page in self.catalog.pages(ident):
+            if not page['included']:continue
+            content=self.catalog.text(ident,page['page_number']) or ''
+            if chunk['start'] < cursor+len(content) and chunk['end'] > cursor:
+                context['pages'].append(page['page_number'])
+            cursor+=len(content)+2
+        return context
+
+    def describe_failure(self, doc):
+        """Recover context for older failures only if the input is still unchanged."""
+        run=doc.get('audio_run',{})
+        if run.get('status')!='failed' or run.get('error_context') or not run.get('current_chunk') or run.get('processed',0)>=run['current_chunk']:return doc
+        path=self.catalog.folder(doc['id'])/'text/book_final.txt'
+        if not path.is_file():return doc
+        text=path.read_text(encoding='utf-8')
+        if digest(text.encode('utf-8'))!=run.get('source_sha256'):return doc
+        chunk=next((c for c in run.get('plan',[]) if c['index']==run['current_chunk']),None)
+        if chunk:
+            run['error_context']=self.failure_context(doc['id'],text,chunk) if doc.get('final_current') else {'chunk':chunk['index'],'text':text[chunk['start']:chunk['end']],'pages':[]}
+        return doc
+
     def generate(self, ident, text, chunks, settings, maximum):
         temp = None
+        failed_chunk = None
         try:
             if self.stop_event.is_set():raise InterruptedError()
             client = self.client_factory()
@@ -222,6 +247,7 @@ class AudioWorkflow:
             for chunk in chunks:
                 if self.stop_event.is_set():raise InterruptedError()
                 if not chunk['text'].strip():continue
+                failed_chunk = chunk
                 chunk_hash = digest(chunk['text'].encode('utf-8'))
                 key = fingerprint({**common,'text_sha256':chunk_hash})
                 cached = self.cache(ident,key)
@@ -252,6 +278,7 @@ class AudioWorkflow:
                     self.catalog.save_doc(doc)
             if self.stop_event.is_set():raise InterruptedError()
             if len(paths)!=sum(bool(c['text'].strip()) for c in chunks):raise ValueError('欠落chunkがあります。')
+            failed_chunk = None
             self.update(ident,status='joining')
             temp = folder/('book_'+uuid.uuid4().hex+'.tmp')
             info = join_wavs(paths,temp,self.stop_event)
@@ -273,7 +300,8 @@ class AudioWorkflow:
         except InterruptedError:
             self.update(ident,status='stopped',error=None,stop_requested=False)
         except Exception as exc:
-            self.update(ident,status='failed',error=str(exc))
+            context = self.failure_context(ident,text,failed_chunk) if failed_chunk else None
+            self.update(ident,status='failed',error=str(exc),error_context=context,finished_at=now())
             logger.exception('WAV generation failed: %s',ident)
         finally:
             if temp:temp.unlink(missing_ok=True)

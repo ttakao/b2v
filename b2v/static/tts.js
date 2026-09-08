@@ -6,7 +6,8 @@
   function active(){return selectedDoc?.busy==='WAV';}
   function enable(){
     $('tts-fields').disabled=!connected||!models.length||pending||!!selectedDoc?.busy;
-    $('tts-generate').disabled=!selectedDoc?.final_current;
+    $('tts-production-fields').disabled=!ident||!connected||!models.length||pending||!!selectedDoc?.busy;
+    $('tts-generate').disabled=!selectedDoc?.assets?.text;
     $('tts-save').disabled=!ident;
     $('tts-stop').hidden=!active();
     $('tts-stop').disabled=!!selectedDoc?.audio_run?.stop_requested;
@@ -36,8 +37,10 @@
   function durationText(seconds){const minutes=Math.ceil(Math.max(0,seconds)/60);return minutes>=60?`${Math.floor(minutes/60)}時間${minutes%60}分`:`${minutes}分`;}
   function render(){
     if(!selectedDoc)return;
+    $('tts-production-document').textContent=`本番生成する本：${selectedDoc.name}`;
     const run=selectedDoc.audio_run,result=selectedDoc.audio_result;
-    $('tts-generate').textContent=run&&['stopped','failed','interrupted'].includes(run.status)?'WAV生成を再開':result?'WAVを再生成':'WAVを生成';
+    $('tts-generate').textContent=run&&['stopped','failed','interrupted'].includes(run.status)?'本全体のWAV生成を再開':result?'本全体のWAVを再生成':'本全体のWAV生成を開始';
+    if(!selectedDoc.final_current&&selectedDoc.assets?.text)$('tts-generate').textContent='修正本文から最終TXTを更新してWAV生成を再開';
     $('tts-progress-panel').hidden=!run;
     if(run){
       const done=run.processed||0,total=run.total||0,generated=done-(run.reused||0);
@@ -49,7 +52,18 @@
       const count=`Chunk ${run.processed||0} / ${run.total||0}（${run.total?Math.floor((run.processed||0)/run.total*100):0}%）`;
       const labels={queued:'開始待ち',generating:'WAV生成中',joining:'全chunk完成・WAVを結合中',stopped:'停止しました',interrupted:'中断されています',completed:'WAV生成完了',failed:'WAV生成に失敗しました'};
       notice(`${labels[run.status]||run.status} — ${count}${run.reused?` / 再利用 ${run.reused}`:''}${run.stop_requested?' / 現在のchunk終了後に停止します':''}${run.error?'\n'+run.error:''}`);
-    }else notice(selectedDoc.final_current?'設定を確認して「WAVを生成」を押してください。':'先に「7. 最終テキスト」で現在の本文からTXTを生成してください。');
+    }else notice(selectedDoc.final_current?'設定を確認して「本全体のWAV生成を開始」を押してください。':'先に「7. 最終テキスト」で現在の本文からTXTを生成してください。');
+    $('tts-error-panel').hidden=run?.status!=='failed';
+    $('tts-error-pages').replaceChildren();
+    if(run?.status==='failed'){
+      const context=run.error_context, longError=run.long_sentence;
+      const numbers=context?.pages||(longError?.page_number?[longError.page_number]:[]);
+      const location=numbers.length?`PDF ${numbers.join('・')}ページ`:'ページ特定なし';
+      const excerpt=context?.text||longError?.text||'';
+      $('tts-error-text').value=`原因：${run.error||'不明なエラー'}\n箇所：${location}${context?.chunk?` / chunk ${context.chunk}`:''}\n本文：${excerpt.replace(/\s+/g,' ').trim()||'失敗時の本文記録がありません。上記は前回のエラーです。'}`;
+      for(const number of numbers){const button=node('button',`PDF ${number}ページを校正`,'secondary');button.type='button';button.onclick=()=>window.openReviewPage(number);$('tts-error-pages').append(button);}
+    }
+    if(!selectedDoc.final_current&&selectedDoc.assets?.text)notice('本文が編集されています。下の再開ボタンで最終TXTを更新し、成功済みchunkを再利用して音声生成を再開します。');
     const long=run?.long_sentence;$('tts-long').hidden=!long;
     if(long){$('tts-long-info').textContent=`${long.characters}文字 / 最大${long.maximum}文字${long.page_number?` / PDF ${long.page_number}ページ`:''}`;$('tts-long-text').textContent=long.text;$('tts-review').hidden=!long.page_number;}
     $('tts-result').hidden=!result;
@@ -75,7 +89,7 @@
     }catch(e){connected=false;$('tts-health').textContent=e.message;}enable();
   }
   window.ttsUI={
-    selectDocument(document){selection++;ident=document.id;selectedDoc=document;saved=document.tts_settings||null;$('tts-document').textContent=`音声化する文書：${document.name}`;$('tts-max-chars').value=document.tts_max_chars||300;fill(saved);render();},
+    selectDocument(document){selection++;ident=document.id;selectedDoc=document;saved=document.tts_settings||null;$('tts-max-chars').value=document.tts_max_chars||300;fill(saved);render();},
     refreshDocument(document){if(document.id!==ident)return;selectedDoc=document;render();}
   };
   $('tts-connect').onclick=connect;$('tts-model').onchange=()=>{modelChildren();changed();};
@@ -103,11 +117,12 @@
     try{const body=payload();await request(`/api/documents/${target}/tts`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(serial===selection){saved=body.settings;notice('音声設定を保存しました。');}}
     catch(e){if(serial===selection)notice(e.message);}
   };
-  form.onsubmit=async e=>{
-    e.preventDefault();if(!ident||pending||!form.reportValidity())return;
+  form.onsubmit=e=>e.preventDefault();
+  $('tts-production-form').onsubmit=async e=>{
+    e.preventDefault();if(e.submitter!==$('tts-generate')||!ident||pending||!form.reportValidity()||!$('tts-production-form').reportValidity())return;
     if(dirty){notice('未保存の本文があります。保存し、最終テキストを再生成してください。');return;}
     const target=ident,serial=selection,body=payload();pending=true;enable();
-    try{await request(`/api/documents/${target}/tts/wav`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(serial===selection)saved=body.settings;await refresh();}
+    try{if(!selectedDoc.final_current)await request(`/api/documents/${target}/final`,{method:'POST'});await request(`/api/documents/${target}/tts/wav`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(serial===selection)saved=body.settings;await refresh();}
     catch(error){await refresh();if(serial===selection)notice(error.message);}
     finally{pending=false;enable();}
   };

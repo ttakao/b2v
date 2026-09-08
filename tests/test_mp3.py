@@ -33,7 +33,7 @@ def test_conversion_cleanup(tmp_path):
     assert 'audio_result' not in doc
     assert not any('hash' in k for k in doc['mp3_result'])
     workflow.delete(ident)
-    assert not catalog.doc(ident).get('mp3_result')
+    with pytest.raises(FileNotFoundError):catalog.doc(ident)
 
 
 def test_failure_preserves_previous(tmp_path):

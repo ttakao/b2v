@@ -121,8 +121,10 @@ def test_deletions_independent_and_reopen(catalog):
     reopened=Catalog(c.root)
     try:assert reopened.page(ident,1)['human_checked'] and reopened.text(ident,1)=='校正済み'
     finally:reopened.executor.shutdown()
-    c.remove(ident,'text');assert c.text(ident,1) is None
-    assert c.doc(ident)['id']==ident
+    c.remove(ident,'text')
+    with pytest.raises(FileNotFoundError):c.doc(ident)
+    assert not c.folder(ident).exists()
+    with c.connect() as db:assert db.execute('SELECT count(*) FROM pages WHERE document_id=?',(ident,)).fetchone()[0]==0
 
 
 def test_ocr_overwrite_preserves_text_until_explicit_regeneration(catalog):
@@ -196,3 +198,22 @@ def test_start_llm_selection_human_rerun_and_manual_unavailable(catalog,monkeypa
         if not c.doc(ident)['busy']:break
         time.sleep(.01)
     assert len(seen)==2 and seen[1][0]==[1,4]
+
+
+def test_llm_progress_tracks_request_and_failure(catalog):
+    c,ident=catalog
+    observed=[]
+    class Progress(LLM):
+        def health(self):
+            assert c.doc(ident)['llm_progress']['status']=='connecting'
+        def request_edits(self,*args):
+            observed.append(c.doc(ident)['llm_progress'])
+            if len(observed)==2:raise RuntimeError('失敗テスト')
+            return {'edits':[]}
+    c.llm(ident,LLMSettings(),[1,3],{1:'本文です。',3:'次の本文です。'},Progress())
+    assert [(p['page'],p['done'],p['chunk']) for p in observed]==[(1,0,1),(3,1,1)]
+    assert all(p['request_started_at'] for p in observed)
+    progress=c.doc(ident)['llm_progress']
+    assert progress['status']=='completed'
+    assert progress['done']==2 and progress['failed']==1 and progress['total']==2
+    assert progress['finished_at']

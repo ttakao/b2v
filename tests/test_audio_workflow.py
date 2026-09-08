@@ -146,3 +146,16 @@ def test_api_wav_settings_and_download(tmp_path,monkeypatch):
         assert inspect_wav(response.content)['sample_rate']==24000
         assert client.get(base+'/tts').json()['result']['chunks']==2
         assert client.get(base+'/tts/sample').status_code==404
+
+
+def test_failed_chunk_context_is_saved(book):
+    c,ident,flow,voice,source=book
+    c.save_page(ident,{'page_number':70,'included':True})
+    c.text_path(ident,70).write_text(source)
+    voice.fail=True
+    flow.start(ident,settings(),100);finish(c,ident)
+    run=c.doc(ident)['audio_run']
+    assert run['status']=='failed'
+    assert run['error_context']['pages']==[70]
+    assert run['error_context']['chunk']==1
+    assert run['error_context']['text']==split_for_tts(source,100)[0]['text']

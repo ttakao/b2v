@@ -138,3 +138,4 @@ class MP3Workflow:
                 if tomb and tomb.exists():tomb.replace(path)
                 raise
             if tomb:tomb.unlink(missing_ok=True)
+            self.catalog.prune_empty(ident)

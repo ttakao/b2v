@@ -41,6 +41,7 @@ def routes(app):
     router=APIRouter(prefix='/api/documents')
     def catalog():return app.state.catalog
     def with_final_file(doc):
+        doc=app.state.audio.describe_failure(doc)
         exists=(catalog().folder(doc['id'])/'text/book_final.txt').is_file()
         return {**doc,'final_exists':exists,'final_current':bool(doc.get('final_current') and exists)}
     @router.get('/storage')
@@ -96,7 +97,9 @@ def routes(app):
             doc['audio_conversion_status']=body.status;catalog().save_doc(doc)
         return doc
     @router.delete('/{ident}/assets/{kind}')
-    def remove(ident:str,kind:str):catalog().remove(ident,kind);return catalog().doc(ident)
+    def remove(ident:str,kind:str):
+        deleted=catalog().remove(ident,kind)
+        return {'id':ident,'deleted':True} if deleted else catalog().doc(ident)
     @router.get('/{ident}/preview/{number}')
     def preview(ident:str,number:int):return preview_page(catalog().folder(ident)/'source/book.pdf',number)
     @router.get('/{ident}/review-image/{number}')

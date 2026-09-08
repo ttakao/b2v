@@ -99,7 +99,9 @@ class Catalog:
         try:task()
         except Exception as exc:
             with self.lock:
-                doc=self.doc(ident);doc['error']=str(exc);self.save_doc(doc)
+                doc=self.doc(ident);doc['error']=str(exc)
+                if doc.get('busy')=='LLM' and doc.get('llm_progress'):doc['llm_progress'].update(status='failed',error=str(exc),finished_at=now())
+                self.save_doc(doc)
         finally:
             with self.lock:
                 doc=self.doc(ident);doc['busy']=None;self.save_doc(doc)
@@ -182,13 +184,14 @@ class Catalog:
             if any(texts[n] is None for n in selected):raise ValueError('選択ページのテキストがありません。OCRから再生成してください。')
             return self.run(ident,'LLM',lambda:self.llm(ident,settings,selected,texts))
     def llm(self,ident,settings,selected,texts,provider=None):
+        doc=self.doc(ident);doc.update(processed=0,operation_total=len(selected),llm_settings=settings.to_dict(),llm_progress={'status':'connecting','started_at':now(),'total':len(selected),'done':0,'failed':0});self.save_doc(doc)
         provider=provider or LlamaNarrator(settings);provider.health()
-        doc=self.doc(ident);doc.update(operation_total=len(selected),llm_settings=settings.to_dict());self.save_doc(doc)
         for number in selected:
             page=self.page(ident,number);page.update(llm_attempted_at=now(),llm_status='running');self.save_page(ident,page)
             try:
                 chunks=split_text(texts[number],settings.chunk_chars);results=[]
                 for index,current in enumerate(chunks):
+                    doc=self.doc(ident);doc['llm_progress'].update(status='generating',page=number,chunk=index+1,chunks=len(chunks),request_started_at=now());self.save_doc(doc)
                     before=''.join(chunks[:index]) or texts.get(number-1) or ''
                     after=''.join(chunks[index+1:]) or texts.get(number+1) or ''
                     provider.metrics_sink=lambda metrics:self.log(ident,{'page':number,'event':'llm_request',**metrics})
@@ -203,7 +206,10 @@ class Catalog:
                             applied_edits=sum(r['applied_edit_count'] for r in results),rejected_edits=sum(r['rejected_edit_count'] for r in results),warnings=[w for r in results for w in r['warnings']])
             except Exception as exc:page.update(llm_status='failed',warnings=[str(exc)])
             self.save_page(ident,page)
-            doc=self.doc(ident);doc['processed']=doc.get('processed',0)+1;self.invalidate(doc);self.save_doc(doc)
+            doc=self.doc(ident);doc['processed']=doc.get('processed',0)+1
+            doc['llm_progress'].update(done=doc['processed'],failed=doc['llm_progress']['failed']+(page['llm_status']=='failed'))
+            self.invalidate(doc);self.save_doc(doc)
+        doc=self.doc(ident);doc['llm_progress'].update(status='completed',finished_at=now());self.save_doc(doc)
     def final(self,ident):
         with self.lock:
             doc=self.idle(ident);texts=[]
@@ -237,3 +243,21 @@ class Catalog:
             if kind in ('ocr','text'):self.invalidate(doc)
             self.save_doc(doc)
             if kind=='ocr':self.rank(ident)
+            return self.prune_empty(ident)
+
+    def prune_empty(self, ident):
+        """Remove only idle documents with no assets or remaining content files."""
+        with self.lock:
+            doc=self.idle(ident)
+            if any(doc.get('assets',{}).values()):return False
+            folder=self.folder(ident)
+            files=[p for p in folder.rglob('*') if p.is_file()]
+            logs={'generation.jsonl','mp3.log.jsonl'}
+            if any(p.parent!=folder/'audio' or p.name not in logs for p in files):return False
+            with self.connect() as db:
+                db.execute('DELETE FROM pages WHERE document_id=?',(ident,))
+                if db.execute("SELECT 1 FROM sqlite_master WHERE name='audio_chunks'").fetchone():
+                    db.execute('DELETE FROM audio_chunks WHERE document_id=?',(ident,))
+                db.execute('DELETE FROM documents WHERE id=?',(ident,))
+            if folder.exists():shutil.rmtree(folder)
+            return True
