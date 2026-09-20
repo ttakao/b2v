@@ -3,6 +3,7 @@
 b2v は、手元のPDF BOOKを **OCR → 必要箇所の校正 → 人間レビュー → 日本語音声合成 → MP3** にするツールです。OCR・校正・保存はローカル、標準の音声合成はGoogle Neural2を使用します。音声化する本文はGoogleへ送信されます。
 
 音声合成を **Google Cloud Text-to-Speech APIのNeural2-C** に変更しました。作者の試聴では、以前のローカル音声よりも抑揚が落ち着き、自然で長時間聞き続けやすい朗読になりました。細かな調整をしなくても、標準の話速1.0・ピッチ0で使えることを重視しています。ローカル音声エンジンは削除し、大きな音声モデルの管理も不要になりました。
+Google Cloud Text to Speech APIをプログラムから使うためには、パソコンに認証が必要です。最後にGoogle Cloud Console CLIのインストールと設定については最後にまとめてあります。
 
 クラウド利用で気になる費用も、Neural2には**毎月100万文字までの無料枠**があります。個人で本を音声化する用途では、この範囲で十分に使えると考えています。例えば本文10万文字の本なら、単純計算で月10冊分です。b2vでは余裕を持って月90万文字を初期上限とし、試聴・再生成を含む送信量を管理します。無料枠内ならNeural2の音声生成料金はかかりません。単位はトークンではなく文字数です。料金の詳細は[Google公式料金表](https://cloud.google.com/text-to-speech/pricing?hl=ja)をご確認ください（2026年9月21日確認）。
 
@@ -207,7 +208,7 @@ gcloud auth application-default login --scopes=openid,https://www.googleapis.com
 gcloud auth application-default set-quota-project YOUR_PROJECT_ID
 ```
 
-`B2V_GOOGLE_PROJECT`でプロジェクトIDを指定します。この環境の既定値は`text2voice-509213`です。APIキー・サービスアカウントJSON・追加のPython SDKは不要です。b2vがADCのアクセストークンをGoogle Cloud CLIから取得し、長時間の生成中も更新します。認証情報やトークンはb2vのログには出しません。
+`B2V_GOOGLE_PROJECT`でプロジェクトIDを指定します。この環境の既定値は`(プロジェクトID)`です。APIキー・サービスアカウントJSON・追加のPython SDKは不要です。b2vがADCのアクセストークンをGoogle Cloud CLIから取得し、長時間の生成中も更新します。認証情報やトークンはb2vのログには出しません。
 
 標準の声は`ja-JP-Neural2-C`、話速1.0、ピッチ0です。画面「8. 音声設定・試聴」で声C/D、話速0.5〜2.0、ピッチ-20〜20半音を変更・保存できます。旧音声設定の本も起動時にNeural2-C・話速1.0・ピッチ0へ移行します。既存の完成MP3は保持します。
 
@@ -687,3 +688,88 @@ PDF
 2026/09/07 高尾　司
 
 試聴と本番生成は別の欄です。「8. 音声設定・試聴」で短文を聴き比べ、「9. 本全体のWAV生成（本番）」で対象の本を確認して全文生成を開始します。試聴の完了メッセージ・再生プレーヤーは試聴欄内に表示します。
+
+---
+
+# Google Cloud CLIと音声APIの設定
+
+Google Cloud Consoleはブラウザーの管理画面、**Google Cloud CLI（`gcloud`）** はMacのターミナルで使うコマンドです。b2vではCLIで認証し、Google Cloud Text-to-Speech APIで音声を生成します。以下はこのM4 Mac miniで使う設定です（2026年9月21日）。
+
+## 手元に必要な情報
+
+| 項目 | この環境の設定 |
+| --- | --- |
+| Googleアカウント | 下記プロジェクトを利用できるアカウントでログイン |
+| プロジェクトID | (Google Cloud Consoleで登録したら割り当てられる。表示名やプロジェクト番号とは別） |
+| 有効にするAPI | **Cloud Text-to-Speech API**（`texttospeech.googleapis.com`） |
+| 請求先 | プロジェクトへ有効な請求先アカウントを関連付ける。無料枠でも必要 |
+| 認証方法 | Application Default Credentials（ADC） |
+| 標準音声 | `ja-JP-Neural2-C`、話速1.0、ピッチ0 |
+| b2vの月間送信上限 | 90万文字。Neural2の無料枠は毎月100万文字 |
+
+APIキーの取得やサービスアカウントキーJSONの作成は、この構成では不要です。音声認識の「Speech-to-Text API」と間違えないようにしてください。
+
+## 1. ConsoleでプロジェクトとAPIを確認
+
+プロジェクトのText-to-Speech API画面を開き、プロジェクトが割り当てられているかを確認します。APIが未有効なら「有効にする」を選びます。Consoleの「お支払い」で請求先の関連付けも確認します。
+
+## 2. CLIをインストール
+
+Homebrew導入済みのMacで実行します。すでに`gcloud --version`が使えれば、再インストールは不要です。
+
+```sh
+brew install --cask gcloud-cli
+gcloud --version
+```
+コマンドが見つからない場合はbrewのパスがとおっていません。
+
+## 3. b2v用に認証する
+
+次のコマンドをそのまま実行します。ブラウザーが開いたら、プロジェクトを利用できるGoogleアカウントでログインしてください。
+
+```sh
+gcloud auth application-default login \
+  --scopes=openid,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/cloud-platform
+```
+
+同意画面ではGoogle Cloudへのアクセスとアカウント情報の権限を許可します。Google Cloudの「データの参照、編集、設定、削除」という広い表示は`cloud-platform`スコープに対応します。実際にできる操作は、そのアカウントに付与された権限でも制限されます。**Cloud SQLインスタンスへのログイン権限はb2vには不要**です。上記コマンドにはSQL用スコープを含めていません。
+
+続いて、APIの使用量・課金先となるプロジェクトをADCへ登録します。
+
+```sh
+gcloud auth application-default set-quota-project プロジェクトID
+```
+
+`Quota project "(プロジェクトID)" was added to ADC`と表示されれば完了です。最初のログインで`Cannot find a quota project`という警告が出ても、この設定が成功すれば解消します。
+
+認証情報は通常`~/.config/gcloud/application_default_credentials.json`へ自動保存されます。これは秘密情報を含むため、READMEやGitへコピーしません。通常は起動のたびにログインする必要はありません。認証が失効した場合は、この節の2つのコマンドをもう一度実行します。
+
+`gcloud auth login`だけではb2v用ADCの設定になりません。また、`gcloud config set project`だけではADCのquota projectは設定されません。上記の`application-default`付きコマンドを使ってください。
+
+## 4. b2vを起動して確認
+
+外付けRAIDを接続してから実行します。この環境ではプロジェクトIDと月間上限はすでに既定値ですが、明示する場合は以下のとおりです。設定を変更するときは、実行中の生成が完了してから`./stop-all.sh`で停止し、再起動します。
+
+```sh
+cd /Users/tsukasa_takao/dev/b2v
+export B2V_GOOGLE_PROJECT=(プロジェクトID)
+export B2V_GOOGLE_MONTHLY_LIMIT=900000
+./run-all.sh
+```
+
+[http://127.0.0.1:8600/](http://127.0.0.1:8600/)を開き、「8. 音声設定・試聴」で「Google Neural2: 利用可能」と表示されることを確認します。短い文章で試聴生成・再生ができれば、認証から音声生成まで動作しています。試聴も送信文字数に含まれます。
+
+## 困ったとき
+
+| 表示・症状 | 確認すること |
+| --- | --- |
+| ADC認証を取得できない・`invalid_grant` | 「3. b2v用に認証する」を再実行 |
+| `API not enabled` / `SERVICE_DISABLED` | `(プロジェクトID)`でText-to-Speech APIを有効化したか |
+| quota projectが見つからない | `set-quota-project (プロジェクトID)`を再実行 |
+| `set-quota-project`で権限エラー | ログインしたアカウントとプロジェクトを確認。`serviceusage.services.use`権限が必要（例：Service Usage Consumerロール） |
+| 課金・請求先関連のエラー | Consoleでプロジェクトに有効な請求先が関連付いているか |
+| b2vの月間上限に到達 | 画面の使用量を確認。翌月への切り替えは米国太平洋時間基準。使用量DBを消してリセットしない |
+
+使用量の記録は`/Volumes/RAID1-6TB/b2v-data/google_tts_usage.sqlite3`に保存します。同じ請求先の別プロジェクト・別アプリでの使用分はb2vでは集計できないため、その分はGoogle Cloud側で確認します。
+
+公式資料：[CLIのインストール](https://docs.cloud.google.com/sdk/docs/downloads-homebrew)、[Text-to-Speechの認証](https://docs.cloud.google.com/text-to-speech/docs/authentication)、[料金・無料枠](https://cloud.google.com/text-to-speech/pricing?hl=ja)。
