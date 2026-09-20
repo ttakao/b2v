@@ -751,7 +751,7 @@ gcloud auth application-default set-quota-project プロジェクトID
 外付けRAIDを接続してから実行します。この環境ではプロジェクトIDと月間上限はすでに既定値ですが、明示する場合は以下のとおりです。設定を変更するときは、実行中の生成が完了してから`./stop-all.sh`で停止し、再起動します。
 
 ```sh
-cd /Users/tsukasa_takao/dev/b2v
+cd (システムを置くフォルダ)
 export B2V_GOOGLE_PROJECT=(プロジェクトID)
 export B2V_GOOGLE_MONTHLY_LIMIT=900000
 ./run-all.sh
