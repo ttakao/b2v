@@ -1,12 +1,16 @@
-# b2v — 自炊PDFからローカルでオーディオブックを作る
+# b2v — 自炊PDFからオーディオブックを作る
 
-b2v は、手元のPDF BOOKを **OCR → 必要箇所の校正 → 人間レビュー → 日本語音声合成 → MP3** までローカルで処理し、オーディオブックを作るためのツールです。
+b2v は、手元のPDF BOOKを **OCR → 必要箇所の校正 → 人間レビュー → 日本語音声合成 → MP3** にするツールです。OCR・校正・保存はローカル、標準の音声合成はGoogle Neural2を使用します。音声化する本文はGoogleへ送信されます。
+
+音声合成を **Google Cloud Text-to-Speech APIのNeural2-C** に変更しました。作者の試聴では、以前のローカル音声よりも抑揚が落ち着き、自然で長時間聞き続けやすい朗読になりました。細かな調整をしなくても、標準の話速1.0・ピッチ0で使えることを重視しています。ローカル音声エンジンは削除し、大きな音声モデルの管理も不要になりました。
+
+クラウド利用で気になる費用も、Neural2には**毎月100万文字までの無料枠**があります。個人で本を音声化する用途では、この範囲で十分に使えると考えています。例えば本文10万文字の本なら、単純計算で月10冊分です。b2vでは余裕を持って月90万文字を初期上限とし、試聴・再生成を含む送信量を管理します。無料枠内ならNeural2の音声生成料金はかかりません。単位はトークンではなく文字数です。料金の詳細は[Google公式料金表](https://cloud.google.com/text-to-speech/pricing?hl=ja)をご確認ください（2026年9月21日確認）。
 
 大量の「自炊」PDFを持っていても、すべての本に市販オーディオブックが存在するわけではありません。また、運転しながら、歩きながら、スマホを見るよりもオーディオブックを効いているほうが安全であることはいうまでもありません。b2v は、そうしたPDFを自分で聞ける形へ変換することを目的にしています。
 
 > **このプロジェクトは、現時点では一般ユーザー向けのワンクリックアプリではありません。**
 > 
-> Python、Homebrew、ターミナル、ローカルLLM、Style-Bert-VITS2 などのセットアップが必要です。  
+> Python、Homebrew、ターミナル、Google Cloud CLIと認証のセットアップが必要です。ローカルLLMは任意です。
 > 一方で、処理はローカル中心で、コードも追いやすい構成にしてあります。自分の環境や本に合わせて改変できる人、AIに読み込ませて改変する人には役立つと考えています。
 
 ---
@@ -30,7 +34,7 @@ PDF画像とOCRで生成した本文を見比べて人間レビュー
  ↓
 book_final.txt
  ↓
-Style-Bert-VITS2
+Google Neural2
  ↓
 WAV
  ↓
@@ -48,7 +52,8 @@ MP3
 - 原ページ画像とOCR本文を並べた人間レビュー
 - 挿絵・広告・重複・不要ページなどの除外
 - 最終TXT生成
-- Style-Bert-VITS2による日本語朗読
+- Google Neural2-Cによる日本語朗読（声・話速・ピッチを本ごとに保存）
+- Googleへの送信予定文字数・月間使用量の表示と上限停止
 - 長文を内部chunkへ分割し、1冊分のWAVを生成
 - WAVから96 kbps / mono MP3を生成
 - SQLiteでPDF・OCR・本文・音声成果物を関連付けて管理
@@ -84,7 +89,6 @@ b2v は特に次のような人を想定しています。
 - Python 3.12
 - Tesseract 5系
 - llama.cpp / llama-server（LLM校正を使う場合）
-- Style-Bert-VITS2 / JP-Extra
 - FFmpeg / FFprobe
 
 Windows / Linuxでも構成要素自体は動作可能なものが多いですが、**このREADMEのセットアップ手順はmacOS Apple Siliconを基準**にしています。
@@ -157,7 +161,7 @@ cd b2v
 
 ## Python仮想環境
 
-b2v本体とStyle-Bert-VITS2は**別venv**にします。
+b2v本体用の仮想環境を作成します。
 
 まずb2v本体：
 
@@ -191,165 +195,31 @@ Python 3.12.x
 
 ---
 
-# Style-Bert-VITS2 のセットアップ
+# Google Neural2 のセットアップ（標準）
 
-Style-Bert-VITS2はb2v本体と依存関係を分離します。
+利用するサービスは、テキストから音声を生成する **Cloud Text-to-Speech API** です。Neural2は毎月100万文字まで無料、超過分は100万文字あたり16米ドルです。以下の請求先設定は無料枠を利用する場合も必要です。b2vの初期上限は月90万文字なので、他の利用と合算して無料枠を超えない範囲で運用できます。
 
-想定ディレクトリ：
-
-```text
-b2v/
-├── .venv/                 # b2v本体
-├── b2v/
-├── stylebert/
-│   ├── .venv/             # Style-Bert専用
-│   └── sbv2-src/          # Style-Bert-VITS2 source
-└── ...
-```
-
-## 1. 専用venvを作る
+Google Cloud Consoleで請求先を設定し、Cloud Text-to-Speech APIを有効化します。このMacのターミナルで実行してください。
 
 ```sh
-mkdir -p stylebert
-cd stylebert
-
-/opt/homebrew/bin/python3.12 -m venv .venv
-source .venv/bin/activate
-
-python -m pip install -U pip
+brew install --cask gcloud-cli
+gcloud auth application-default login --scopes=openid,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/cloud-platform
+gcloud auth application-default set-quota-project YOUR_PROJECT_ID
 ```
 
-必ず確認してください。
+`B2V_GOOGLE_PROJECT`でプロジェクトIDを指定します。この環境の既定値は`text2voice-509213`です。APIキー・サービスアカウントJSON・追加のPython SDKは不要です。b2vがADCのアクセストークンをGoogle Cloud CLIから取得し、長時間の生成中も更新します。認証情報やトークンはb2vのログには出しません。
 
-```sh
-which python3
-python3 -V
-echo $VIRTUAL_ENV
-```
+標準の声は`ja-JP-Neural2-C`、話速1.0、ピッチ0です。画面「8. 音声設定・試聴」で声C/D、話速0.5〜2.0、ピッチ-20〜20半音を変更・保存できます。旧音声設定の本も起動時にNeural2-C・話速1.0・ピッチ0へ移行します。既存の完成MP3は保持します。
 
-`$VIRTUAL_ENV` が `.../b2v/stylebert/.venv` になっていれば正しい環境です。
+「送信予定文字数を確認」で成功済みchunkを除いた新規送信量を確認できます。生成開始時にも上限を確認し、一冊の新規送信量が残量を超える場合は送信せず停止します。生成中は各リクエストの直前にも上限を確認します。停止・失敗後は同じ声・設定・分割上限で再開すると成功済みchunkを再利用します。
 
-## 2. Style-Bert-VITS2 sourceを取得
+月間上限の初期値は90万文字です。`B2V_GOOGLE_MONTHLY_LIMIT`で0〜100万文字の範囲に設定できます（0は新規送信停止）。変更はb2v再起動後に反映します。使用量は`B2V_DATA_DIR/google_tts_usage.sqlite3`に保存し、米国太平洋時間の暦月・プロジェクト別に集計します。試聴も含め、送信前に予約し、通信失敗・タイムアウトでも減算せず、自動再送もしません。書籍・MP3を削除しても使用量は減りません。使用量DBは削除しないでください。
 
-```sh
-git clone https://github.com/litagin02/Style-Bert-VITS2.git sbv2-src
-cd sbv2-src
-```
+この上限はGoogle請求の確定額ではなく、この保存先から送信した文字数の保守的な管理です。同じ請求先アカウントの他プロジェクト・別アプリ・別の保存先での利用は自動取得しません。Googleの無料枠は請求先アカウント内で共有されるため、Google Cloudの使用状況も確認してください。料金・無料枠が変更された場合は上限も見直してください。
 
-Style-Bert-VITS2は更新により依存関係が変化することがあります。  
-**動作確認できた環境では、その時点の依存関係をlockして再利用することを推奨します。**
+Googleはモデルの重みや固定バージョンを公開していないため、長期間あけて再開した場合の声の完全一致は保証できません。キャッシュにはエンジン、声、話速、ピッチ、出力形式、本文、分割条件を含め、異なる音声設定のキャッシュとは混在させません。
 
-このプロジェクトに `stylebert/requirements-lock.txt` 等が含まれている場合は、まずそれを優先してください。
-
-## 3. 推論環境
-
-Style-Bert-VITS2の公式プロジェクトは機能が多く、学習・音声認識等の依存も含みます。b2vで必要なのは主に**推論**です。
-
-環境により追加パッケージが必要になります。少なくとも本プロジェクトのApple Silicon環境では、次の系統を使用しました。
-
-```sh
-python -m pip install style-bert-vits2
-python -m pip install onnxruntime accelerate
-```
-
-`initialize.py` が要求する場合：
-
-```sh
-python -m pip install PyYAML huggingface-hub
-```
-
-モデル/BERTデータを取得：
-
-```sh
-python initialize.py
-```
-
-完了後、例えば次のようなファイルができます。
-
-```text
-model_assets/
-└── jvnv-M1-jp/
-    ├── config.json
-    ├── *.safetensors
-    └── style_vectors.npy
-```
-
-## 4. Apple Siliconで遭遇した注意点
-
-Style-Bert-VITS2周辺はPython / NumPy / PyTorch / pyopenjtalkの組み合わせによって挙動が変わります。
-
-このため、**「READMEに書かれた最新バージョンへ全部更新する」より、「実際に音声生成に成功した環境を固定する」ことを推奨します。**
-
-成功後：
-
-```sh
-python -m pip freeze > ../requirements-lock.txt
-```
-
-としておくと再構築しやすくなります。
-
-### `pkg_resources` が見つからない
-
-古い `pyopenjtalk` 系が `pkg_resources` を参照する場合があります。新しいsetuptoolsとの組み合わせで問題になる場合は、動作確認済みlockを優先してください。
-
-### `numpy.dtype size changed`
-
-例：
-
-```text
-ValueError: numpy.dtype size changed, may indicate binary incompatibility
-```
-
-NumPyとC拡張モジュールのABI不整合です。NumPyまたはpyopenjtalkを単独で無闇に更新せず、動作確認済み依存構成へ戻してください。
-
-### `Input type (c10::Half) and bias type (float)`
-
-Apple Silicon CPU推論で、日本語BERT特徴量がfloat16、Style-Bert側がfloat32になった場合に発生しました。
-
-本プロジェクトの動作確認環境では、`style_bert_vits2/nlp/japanese/bert_feature.py` の該当BERT特徴量をCPUへ移す箇所でfloat32へ変換する修正を使用しています。
-
-概念的には：
-
-```python
-.cpu()
-```
-
-を
-
-```python
-.cpu().float()
-```
-
-とします。
-
-リポジトリにこのパッチが既に含まれている場合は追加修正しないでください。
-
----
-
-# Style-Bert単体の動作確認
-
-b2vへ接続する前に、Style-Bert-VITS2単体で短文をWAV化できることを確認してください。
-
-成功時の目安：
-
-```text
-Using JP-Extra model
-Model loaded successfully
-Loaded the JP BERT model
-Audio data generated successfully
-```
-
-WAVが生成されたらmacOSでは：
-
-```sh
-open test.wav
-```
-
-で試聴できます。
-
-この単体試験が通ってからb2vを起動する方が、問題の切り分けが容易です。
-
----
+公式情報：[認証](https://docs.cloud.google.com/text-to-speech/docs/authentication)、[料金](https://cloud.google.com/text-to-speech/pricing?hl=ja)、[月間料金階層のリセット](https://docs.cloud.google.com/billing/docs/how-to/pricing-table)。
 
 # ローカルLLM（任意）
 
@@ -381,7 +251,6 @@ b2vでは `llama-server` をローカルHTTPサーバとして使用します。
 | `B2V_DATA_DIR`      | `/Volumes/RAID1-6TB/b2v-data` |
 | `B2V_API_URL`       | `http://127.0.0.1:8600`       |
 | `B2V_LLM_URL`       | `http://127.0.0.1:8602`       |
-| `B2V_STYLEBERT_URL` | `http://127.0.0.1:8603`       |
 
 `B2V_DATA_DIR`直下にSQLiteと`books/`を保存します。外付けボリュームを接続してから起動してください。以下で`$B2V_DATA_DIR`と表記する場所は、環境変数未指定の場合も上記デフォルトを指します。
 
@@ -391,7 +260,6 @@ b2vでは `llama-server` をローカルHTTPサーバとして使用します。
 export B2V_DATA_DIR=/Volumes/RAID1-6TB/b2v-data
 export B2V_API_URL=http://127.0.0.1:8600
 export B2V_LLM_URL=http://127.0.0.1:8602
-export B2V_STYLEBERT_URL=http://127.0.0.1:8603
 ```
 
 起動スクリプトも同じURLからホスト・ポートを取得します。付属スクリプトはHTTP起動用です。ブラウザーは`B2V_API_URL`のURLで開いてください。以前の`B2V_PORT`・`B2V_LLM_PORT`は使用しません。URL変更はプロセス再起動後に反映されます。
@@ -405,7 +273,7 @@ cd /path/to/b2v
 ./run-all.sh
 ```
 
-b2v・LLM・Style-Bertをバックグラウンドで起動し、応答を確認します。環境変数は個別起動と同じ共通設定を使います。ログは `logs/b2v.log`・`logs/llm.log`・`logs/stylebert.log` に追記します。起動記録は `run/` に保存します。
+標準ではb2vだけをバックグラウンドで起動し、応答を確認します。Google音声にはローカルの音声サーバーは不要です。LLMが必要なときは`./run-llm.sh`を実行してください。一括起動に含める場合は`B2V_START_LLM=1`を指定します。環境変数は個別起動と共通です。ログは `logs/b2v.log`・`logs/llm.log` に追記し、起動記録は `run/` に保存します。
 
 終了するとき：
 
@@ -413,19 +281,18 @@ b2v・LLM・Style-Bertをバックグラウンドで起動し、応答を確認�
 ./stop-all.sh
 ```
 
-b2vへ通常終了を要求し、その終了後にLLM・Style-Bertを停止します。実行中の処理を待ち、WAV生成は現在のchunk終了後に止めます。待ち時間による自動強制終了はしません。停止待ちをCtrl+Cで中断しても、再度 `./stop-all.sh` を実行できます。
+b2vへ通常終了を要求し、その終了後にLLMを停止します。実行中の処理を待ち、WAV生成は現在のchunk終了後に止めます。待ち時間による自動強制終了はしません。停止待ちをCtrl+Cで中断しても、再度 `./stop-all.sh` を実行できます。
 
-別の方法で起動済みのサービスは利用可能か確認しますが、停止管理へ取り込みません。管理対象外のb2vが稼働中なら、LLM・Style-Bertの停止も見合わせます。すべてを一括停止したい場合は、最初に個別起動したサービスを元のターミナルから終了し、その後 `./run-all.sh` で起動してください。
+別の方法で起動済みのサービスは利用可能か確認しますが、停止管理へ取り込みません。管理対象外のb2vが稼働中なら、LLMの停止も見合わせます。すべてを一括停止したい場合は、最初に個別起動したサービスを元のターミナルから終了し、その後 `./run-all.sh` で起動してください。
 
 起動失敗時は成功と表示せず、該当ログを案内します。それまでに起動したサービスは保持します。必要なら `./stop-all.sh` で停止してください。起動確認は最大180秒です。再実行時は管理中のPID・開始時刻・実行引数とサービスの応答を照合します。
 
-b2vは現在3つのローカルプロセスで構成します。
+b2vのローカルプロセスは以下の通りです。通常は8600だけを使用します。
 
 | ポート  | 用途               | 必須        |
 | ---- | ---------------- | --------- |
 | 8600 | b2v Webアプリ       | 必須        |
 | 8602 | llama.cpp LLM    | 任意        |
-| 8603 | Style-Bert-VITS2 | WAV生成時に必要 |
 
 ## Terminal 1 — b2v
 
@@ -448,19 +315,6 @@ cd /path/to/b2v
 ```
 
 LLM校正を使わなければ起動不要です。
-
-## Terminal 3 — Style-Bert-VITS2
-
-```sh
-cd /path/to/b2v
-./run-stylebert.sh
-```
-
-使用中は必要なターミナルを開いたままにしてください。
-
-終了時は、処理完了を待って `Ctrl+C` で停止します。
-
----
 
 # 使い方
 
@@ -546,20 +400,9 @@ book_final.txt
 
 ## 8. WAV音声生成
 
-Style-Bert-VITS2を8603で起動してから実行します。
+Google Neural2への接続確認が成功すれば生成できます。
 
-主な設定：
-
-- Model
-- Voice / Speaker
-- Style
-- Style Weight
-- Speed
-- Noise
-- SDP Noise
-- Pitch
-- Intonation
-- 最大chunk文字数
+Googleの設定は声C/D・Speed（話速）・ピッチです。通常はNeural2-C、話速1.0、ピッチ0を使います。
 
 長文は内部的に複数chunkへ分割しますが、これはTTS処理単位です。  
 **最終成果物を複数ファイルに分割するためのものではありません。**
@@ -585,61 +428,6 @@ mono
 - MP3ダウンロード
 
 が可能です。
-
----
-
-# Style-Bert-VITS2 朗読設定
-
-最初は次を基準にします。
-
-```text
-Style:       Neutral
-Style Weight: 1.0
-Speed:        1.0
-Noise:        0.6
-SDP Noise:    0.8
-Pitch:        1.0
-Intonation:   1.0
-```
-
-## 抑揚が強すぎる場合
-
-まず `Intonation` を下げます。
-
-例：
-
-```text
-1.0 → 0.9 → 0.8 → 0.7
-```
-
-次に必要ならStyle Weightを調整します。
-
-朗読ではモデルによって演技感が強く感じられることがあります。長時間聞く用途では、短いサンプルだけでなく実際に数十分聞いて設定を決めることを推奨します。
-
-## Speed
-
-b2vの画面では大きいほど速くなる方向です。
-
-内部ではStyle-Bert-VITS2の：
-
-```text
-length = 1 / speed
-```
-
-へ変換します。
-
-## Advanced
-
-| 項目         | 意味                |
-| ---------- | ----------------- |
-| Noise      | 音声生成時のランダム性       |
-| SDP Noise  | 音素長・発話タイミングの揺らぎ   |
-| Pitch      | 声全体の高さ            |
-| Intonation | 平均ピッチからの上下動＝抑揚の強さ |
-
-まずNoiseは0.6、Pitchは1.0のままにし、Style / Speed / SDP Noise / Intonationを優先して比較するのがおすすめです。
-
-これらはテストできますから、事前に設定しておいてください。
 
 ---
 
@@ -739,12 +527,6 @@ confidenceが高くても誤認識はあり得ます。逆にconfidenceが低く
 
 現在は原則として1冊を1つのMP3にします。これは個人的にそのほうが便利だからというのもあります。
 
-### Style-Bert-VITS2の環境構築が難しい場合がある
-
-特にApple SiliconではPython/NumPy/PyTorch/pyopenjtalkの組み合わせに依存する問題が出る場合があります。動作した環境のlockを保存することを推奨します。
-
----
-
 # よくあるトラブル
 
 ## `jpn` / `jpn_vert` がない
@@ -761,14 +543,13 @@ macOS/Homebrew：
 brew install tesseract-lang
 ```
 
-## 8602 / 8603へ接続できない
+## 8602へ接続できない
 
 ポート：
 
 ```text
 8600 b2v
 8602 LLM
-8603 Style-Bert
 ```
 
 を確認してください。
@@ -785,23 +566,6 @@ brew install ffmpeg
 ffmpeg -version
 ffprobe -version
 ```
-
-## Style-Bertで音声が出ない
-
-まずb2vを経由せず、Style-Bert専用venvで短文WAV生成を確認してください。
-
-問題を：
-
-```text
-b2v側
-Style-Bert Server側
-Python依存
-TTSモデル
-```
-
-に切り分けるのが近道です。
-
----
 
 # 実装概要
 
@@ -827,9 +591,9 @@ b2v/static/
     HTML / CSS / Vanilla JavaScript
 ```
 
-Style-Bert-VITS2は別プロセスとして8603で動作し、b2vからHTTPで呼び出します。
+Google音声は `b2v/google_tts.py` からHTTPSで呼び出します。
 
-b2v本体へStyle-Bertの重いPython依存を直接混ぜない構成です。
+ローカル音声モデルやPyTorchは不要です。
 
 ---
 
@@ -841,7 +605,7 @@ b2v本体へStyle-Bertの重いPython依存を直接混ぜない構成です。
 
 OCR confidence、候補選択、低文字量ページ、人間編集、LLM処理、ページ除外、SQLite再読み込み、最終TXT等を検証します。
 
-音声系はStyle-Bert ServerとFFmpegが必要です。
+自動テストではGoogle通信をモックします。MP3の検証にはFFmpegが必要です。
 
 ---
 
@@ -877,7 +641,7 @@ PDFの複製、OCR、音声化、共有、公開等に関する権利関係は�
 
 b2v本体のライセンスは、MITライセンスです。
 
-Style-Bert-VITS2本体、音声モデル、LLMモデル、Tesseract、FFmpegその他の依存物には、それぞれ別のライセンス・利用条件があります。したがって同梱しておりません。
+Google Cloudサービス、LLMモデル、Tesseract、FFmpegその他の依存物には、それぞれ別のライセンス・利用条件があります。したがって同梱しておりません。
 
 特に音声モデルやLLMモデルは、コード本体と同じライセンスとは限りません。利用・再配布前に各配布元の条件を確認してください。
 
@@ -885,8 +649,8 @@ Style-Bert-VITS2本体、音声モデル、LLMモデル、Tesseract、FFmpegそ�
 
 # 関連プロジェクト
 
-- Style-Bert-VITS2  
-  https://github.com/litagin02/Style-Bert-VITS2
+- Google Cloud Text-to-Speech
+  https://cloud.google.com/text-to-speech
 
 - Tesseract OCR  
   https://github.com/tesseract-ocr/tesseract
@@ -909,7 +673,7 @@ PDF
 → 品質確認
 → 人間 / LLM校正
 → 最終TXT
-→ Style-Bert-VITS2
+→ Google Neural2
 → WAV
 → MP3
 ```

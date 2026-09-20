@@ -10,7 +10,7 @@ import wave
 from pathlib import Path
 
 from .catalog import now
-from .stylebert import StyleBertClient, TTSSettings
+from .google_tts import GoogleClient, GoogleSettings
 
 logger = logging.getLogger('uvicorn.error')
 SPLITTER_VERSION = 'paragraph-sentence-v1'
@@ -103,7 +103,7 @@ def join_wavs(paths, output, stop=None):
 
 
 class AudioWorkflow:
-    def __init__(self, catalog, client_factory=StyleBertClient):
+    def __init__(self, catalog, client_factory=None):
         self.catalog = catalog
         self.client_factory = client_factory
         self.guard = threading.Lock()
@@ -112,6 +112,10 @@ class AudioWorkflow:
         with catalog.connect() as db:
             db.execute('CREATE TABLE IF NOT EXISTS audio_chunks (document_id TEXT, fingerprint TEXT, data TEXT NOT NULL, PRIMARY KEY(document_id,fingerprint))')
             for doc in catalog.list():
+                if doc.get('tts_settings') and doc['tts_settings'].get('engine') != 'google':
+                    # Retire local-engine controls; preserve finished audio and text.
+                    doc['tts_settings'] = GoogleSettings().model_dump()
+                    catalog.save_doc(doc)
                 run = doc.get('audio_run')
                 if run and run['status'] in ('generating','joining','queued'):
                     run.update(status='interrupted', error='前回の音声生成が中断されました。再開できます。')
@@ -122,6 +126,36 @@ class AudioWorkflow:
             doc = self.catalog.doc(ident)
             doc.setdefault('audio_run',{}).update(changes)
             self.catalog.save_doc(doc)
+
+    def client(self, settings):
+        return self.client_factory() if self.client_factory else GoogleClient(self.catalog.root)
+
+    def context(self, client, settings, maximum):
+        model = next((m for m in client.list_models()['models'] if m['id']==settings.model_id), None)
+        if not model:raise ValueError('指定したModelがありません。')
+        if settings.speaker_id not in [s['id'] for s in model['speakers']] or settings.style not in model['styles']:
+            raise ValueError('Voice / Styleを確認してください。')
+        return {'settings':settings.model_dump(), 'model_identity':model['identity'], 'splitter':SPLITTER_VERSION,
+                'max_chunk_chars':maximum, 'pause':'google-default-only'}
+
+    def estimate(self, ident, settings, maximum):
+        doc = self.catalog.doc(ident)
+        if not doc.get('final_current'):
+            raise ValueError('本文が更新されています。最終TXTを更新してから送信予定文字数を確認してください。')
+        text = (self.catalog.folder(ident)/'text/book_final.txt').read_text(encoding='utf-8')
+        chunks = split_for_tts(text, maximum)
+        client = self.client(settings)
+        common = self.context(client, settings, maximum)
+        seen = set(); characters = 0; reused = 0
+        for chunk in chunks:
+            if not chunk['text'].strip():continue
+            key = fingerprint({**common, 'text_sha256':digest(chunk['text'].encode('utf-8'))})
+            if key in seen or self.cache(ident,key):reused += 1
+            else:characters += len(chunk['text'])
+            seen.add(key)
+        result = {'total_characters':len(text), 'send_characters':characters, 'chunks':len(chunks), 'reused':reused}
+        result['usage'] = client.usage.status()
+        return result
 
     def stop(self, ident=None):
         with self.guard:
@@ -226,16 +260,13 @@ class AudioWorkflow:
         failed_chunk = None
         try:
             if self.stop_event.is_set():raise InterruptedError()
-            client = self.client_factory()
+            client = self.client(settings)
             client.health()
-            models = client.list_models()['models']
-            model = next((m for m in models if m['id']==settings.model_id),None)
-            if not model:raise ValueError('指定したModelがありません。')
-            if settings.speaker_id not in [s['id'] for s in model['speakers']] or settings.style not in model['styles']:
-                raise ValueError('Voice / Styleを確認してください。')
-            identity = model['identity']
-            common = {'settings':settings.model_dump(),'model_identity':identity,'splitter':SPLITTER_VERSION,
-                      'max_chunk_chars':maximum,'pause':'stylebert-default-only'}
+            common = self.context(client, settings, maximum)
+            identity = common['model_identity']
+            estimate = self.estimate(ident, settings, maximum)
+            if estimate['send_characters'] > estimate['usage']['remaining']:
+                raise ValueError(f"送信予定 {estimate['send_characters']:,}文字が今月の残り {estimate['usage']['remaining']:,}文字を超えています。音声は送信していません。")
             source_hash = digest(text.encode('utf-8'))
             folder = self.catalog.folder(ident)/'audio'
             (folder/'chunks').mkdir(parents=True,exist_ok=True)

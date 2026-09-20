@@ -7,7 +7,6 @@ DEFAULTS = {
     'B2V_DATA_DIR': '/Volumes/RAID1-6TB/b2v-data',
     'B2V_API_URL': 'http://127.0.0.1:8600',
     'B2V_LLM_URL': 'http://127.0.0.1:8602',
-    'B2V_STYLEBERT_URL': 'http://127.0.0.1:8603',
 }
 
 
@@ -27,4 +26,3 @@ def service_url(service):
 
 
 def llm_url():return service_url('llm')
-def stylebert_url():return service_url('stylebert')

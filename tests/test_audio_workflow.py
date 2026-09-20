@@ -10,11 +10,12 @@ from fastapi.testclient import TestClient
 from b2v.api import create_app
 from b2v.catalog import Catalog
 from b2v.audio_workflow import AudioWorkflow, LongSentence, split_for_tts, join_wavs, wav_info
-from b2v.stylebert import TTSSettings, inspect_wav
+from b2v.google_tts import GoogleSettings, Usage
+from b2v.audio_format import inspect_wav
 
-IDENTITY={'model_id':'voice','weight_sha256':'weights','config_sha256':'config','style_vectors_sha256':'styles'}
+IDENTITY={'model_id':'ja-JP-Neural2-C','weight_sha256':'weights','config_sha256':'config','style_vectors_sha256':'styles'}
 
-def settings():return TTSSettings(model_id='voice',speaker_id=0,style='Neutral')
+def settings():return GoogleSettings()
 
 def audio(value=1):
     stream=io.BytesIO()
@@ -23,9 +24,9 @@ def audio(value=1):
     return stream.getvalue()
 
 class Voice:
-    def __init__(self):self.seen=[];self.fail=False;self.identity=dict(IDENTITY)
-    def health(self):return {'status':'ok','engine':'Style-Bert-VITS2'}
-    def list_models(self):return {'models':[{'id':'voice','speakers':[{'id':0,'name':'voice'}],'styles':['Neutral'],'identity':self.identity}]}
+    def __init__(self, root):self.usage=Usage(root);self.seen=[];self.fail=False;self.identity=dict(IDENTITY)
+    def health(self):return {'status':'ok','engine':'Google Neural2'}
+    def list_models(self):return {'models':[{'id':'ja-JP-Neural2-C','speakers':[{'id':0,'name':'voice'}],'styles':['Neutral'],'identity':self.identity}]}
     def synthesize(self,text,settings):
         if self.fail:raise ValueError('TTS offline')
         self.seen.append(text);data=audio(len(self.seen))
@@ -38,7 +39,7 @@ def book(tmp_path):
     source='これは最初の文です。'*8+'\n\n'+'次の段落を読みます。'*8
     path=c.folder(ident)/'text/book_final.txt';path.write_text(source)
     doc.update(final_current=True);doc['assets']['text']=True;c.save_doc(doc)
-    voice=Voice();flow=AudioWorkflow(c,lambda:voice)
+    voice=Voice(tmp_path);flow=AudioWorkflow(c,lambda:voice)
     yield c,ident,flow,voice,source
     flow.stop();c.executor.shutdown(wait=True)
 
@@ -128,7 +129,7 @@ def test_long_sentence_record_and_sample_removal(book):
     assert not voice.seen
 
 def test_api_wav_settings_and_download(tmp_path,monkeypatch):
-    voice=Voice()
+    voice=Voice(tmp_path)
     with TestClient(create_app(tmp_path)) as client:
         app=client.app;app.state.audio.client_factory=lambda:voice
         pdf=pymupdf.open();pdf.new_page()
@@ -159,3 +160,23 @@ def test_failed_chunk_context_is_saved(book):
     assert run['error_context']['pages']==[70]
     assert run['error_context']['chunk']==1
     assert run['error_context']['text']==split_for_tts(source,100)[0]['text']
+
+
+def test_retired_voice_settings_migrate_without_changing_book_or_mp3(book):
+    c,ident,flow,voice,source=book
+    doc=c.doc(ident)
+    doc['tts_settings']={'model_id':'jvnv-F1-jp','speaker_id':0,'style':'Neutral','noise':0.6}
+    doc['mp3_result']={'filename':'existing.mp3','duration':3600}
+    mp3=c.folder(ident)/'audio/existing.mp3';mp3.write_bytes(b'existing audio')
+    c.save_doc(doc)
+    AudioWorkflow(c,lambda:voice)
+    updated=c.doc(ident)
+    assert updated['tts_settings']==settings().model_dump()
+    assert updated['mp3_result']==doc['mp3_result']
+    assert mp3.read_bytes()==b'existing audio'
+    assert (c.folder(ident)/'text/book_final.txt').read_text()==source
+
+
+def test_wav_validation_rejects_invalid_and_truncated_audio():
+    with pytest.raises(ValueError):inspect_wav(b'not a wav')
+    with pytest.raises(ValueError,match='途中'):inspect_wav(audio()[:-2])

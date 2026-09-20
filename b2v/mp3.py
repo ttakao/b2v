@@ -101,6 +101,7 @@ class MP3Workflow:
                 raise ValueError('形式または再生時間が一致しません。')
             command([executable('ffmpeg'),'-nostdin','-v','error','-xerror','-i',str(temporary),'-f','null','-'],stage)
             result = {'filename':temporary.name, 'display_name':re.sub(r'[\x00-\x1f/\\:*?"<>|]', '_', title).strip(' .')[:180]+'.mp3', 'duration':duration, 'sample_rate':int(stream['sample_rate']), 'channels':1, 'bitrate_kbps':96, 'size_bytes':temporary.stat().st_size, 'generated_at':now()}
+            result.update(settings=wav.get('settings'),model_identity=wav.get('model_identity'),source_sha256=wav.get('source_sha256'))
             stage = 'SQLite登録失敗'
             with self.catalog.lock:
                 doc = self.catalog.doc(ident)

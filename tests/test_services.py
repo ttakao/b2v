@@ -4,6 +4,17 @@ import pytest
 from b2v import services
 
 
+def test_google_start_skips_local_models(tmp_path,monkeypatch):
+    monkeypatch.setattr(services,'RUN',tmp_path/'run');monkeypatch.setattr(services,'LOG',tmp_path/'logs')
+    monkeypatch.delenv('B2V_START_LLM',raising=False)
+    calls=[];monkeypatch.setattr(services,'start_one',lambda *args:calls.append(args))
+    services.main('start')
+    assert calls==[('api','b2v')]
+    calls.clear();monkeypatch.setenv('B2V_START_LLM','1')
+    services.main('start')
+    assert calls==[('api','b2v'),('llm','llm')]
+
+
 def test_pid_reuse_never_signals(tmp_path,monkeypatch):
     monkeypatch.setattr(services,'RUN',tmp_path)
     (tmp_path/'b2v.json').write_text(json.dumps({'pid':123,'identity':'old','url':'http://127.0.0.1:8600'}))
@@ -20,7 +31,7 @@ def test_stop_order_and_wait(tmp_path,monkeypatch):
     monkeypatch.setattr(services,'stop_one',lambda name:order.append(name))
     monkeypatch.setattr(services,'listening',lambda url:False)
     services.main('stop')
-    assert order==['b2v','llm','stylebert']
+    assert order==['b2v','llm']
 
 
 def test_external_b2v_preserves_dependencies(tmp_path,monkeypatch):

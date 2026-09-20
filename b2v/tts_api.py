@@ -1,18 +1,18 @@
-"""Document-linked WAV operations; Style-Bert remains a separate HTTP process."""
+"""Document-linked Google Neural2 WAV operations."""
 from fastapi import APIRouter
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
-from .stylebert import StyleBertClient, TTSSettings
+from .google_tts import GoogleClient, GoogleSettings, Usage
 
 
 class WAVRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    settings: TTSSettings
+    settings: GoogleSettings
     max_chunk_chars: int = Field(default=300,ge=50,le=300)
 
 
 class AuditionRequest(BaseModel):
-    settings: TTSSettings
+    settings: GoogleSettings
     text: str = Field(min_length=1, max_length=150)
 
 
@@ -26,17 +26,27 @@ def routes(app):
         if not audio.guard.acquire(blocking=False):raise ValueError('音声生成中です。完了後に試聴してください。')
         try:
             if audio.active:raise ValueError('本のWAV生成中は試聴できません。')
-            data, _ = StyleBertClient().synthesize(body.text, body.settings)
+            data, _ = audio.client(body.settings).synthesize(body.text, body.settings)
             return Response(data,media_type='audio/wav',headers={'Cache-Control':'no-store'})
         finally:audio.guard.release()
 
     @router.get('/api/tts/health')
     def health():
-        try:return {'ready':True, **StyleBertClient().health()}
+        client = GoogleClient(app.state.catalog.root)
+        try:return {'ready':True, **client.health()}
         except ValueError as exc:return {'ready':False,'message':str(exc)}
 
     @router.get('/api/tts/models')
-    def models():return StyleBertClient().list_models()
+    def models():
+        client = GoogleClient(app.state.catalog.root)
+        return client.list_models()
+
+    @router.get('/api/tts/usage')
+    def usage():return Usage(app.state.catalog.root).status()
+
+    @router.post('/api/documents/{ident}/tts/estimate')
+    def estimate(ident:str,body:WAVRequest):
+        return app.state.audio.estimate(ident,body.settings,body.max_chunk_chars)
 
     @router.get('/api/documents/{ident}/tts')
     def settings(ident:str):

@@ -16,7 +16,6 @@ from .launch import command
 ROOT = Path(__file__).resolve().parent.parent
 RUN = ROOT/'run'
 LOG = ROOT/'logs'
-SERVICES = [('api','b2v'),('llm','llm'),('stylebert','stylebert')]
 
 
 def identity(pid):
@@ -47,7 +46,6 @@ def ready(service,url):
         if response.status_code!=200:return False
         data=response.json()
         if service=='api':return data.get('root')==str(data_dir())
-        if service=='stylebert':return data.get('engine')=='Style-Bert-VITS2' and data.get('status')=='ok'
         return data.get('status')=='ok'
     except (httpx.HTTPError,ValueError):return False
 
@@ -74,13 +72,19 @@ def start_one(service,name):
         raise RuntimeError(f'{name}: {url} は別プロセスが使用中、またはサービス準備中です。')
     args=command(service)
     env=os.environ.copy()
-    if service=='stylebert':env.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1')
-    cwd=ROOT/'stylebert/sbv2-src' if service=='stylebert' else ROOT
     logfile=LOG/(name+'.log')
     with logfile.open('ab') as stream:
-        process=subprocess.Popen(args,cwd=cwd,env=env,stdin=subprocess.DEVNULL,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
-    # Popen has completed exec; capture executable command and process creation time.
-    record={'pid':process.pid,'identity':identity(process.pid),'url':url,'service':service}
+        process=subprocess.Popen(args,cwd=ROOT,env=env,stdin=subprocess.DEVNULL,stdout=stream,stderr=subprocess.STDOUT,start_new_session=True)
+    # macOS may not expose a newly spawned command to ps immediately.
+    process_identity = identity(process.pid)
+    for _ in range(50):
+        if process_identity or process.poll() is not None:break
+        time.sleep(.02)
+        process_identity = identity(process.pid)
+    if not process_identity:
+        if process.poll() is None:process.terminate();process.wait()
+        raise RuntimeError(f'{name}: 起動失敗。プロセス情報を確認できません。ログ: {logfile}')
+    record={'pid':process.pid,'identity':process_identity,'url':url,'service':service}
     temporary=record_path(name).with_suffix('.tmp')
     temporary.write_text(json.dumps(record));temporary.replace(record_path(name))
     (RUN/(name+'.pid')).write_text(str(process.pid)+'\n')
@@ -122,14 +126,17 @@ def main(action):
         try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:raise RuntimeError('別の起動・停止操作が実行中です。')
         if action=='start':
-            for service,name in SERVICES:start_one(service,name)
+            # Google TTS needs no resident model server. LLM is optional.
+            selected = [('api','b2v')]
+            if os.environ.get('B2V_START_LLM')=='1':selected.append(('llm','llm'))
+            for service,name in selected:start_one(service,name)
             print(f'起動確認完了\nDATA: {data_dir()}\nb2v: {service_url("api")}',flush=True)
         else:
             record=read_record('b2v')
             url=record['url'] if record else service_url('api')
             stop_one('b2v')
-            if listening(url):raise RuntimeError('管理対象外のb2vが稼働中です。先にそのb2vを終了してください。LLM・Style-Bertは保持します。')
-            stop_one('llm');stop_one('stylebert')
+            if listening(url):raise RuntimeError('管理対象外のb2vが稼働中です。先にそのb2vを終了してください。LLMは保持します。')
+            stop_one('llm')
             print('停止確認完了',flush=True)
 
 

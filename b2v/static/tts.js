@@ -1,14 +1,20 @@
 (() => {
   const form=$('tts-form');
   let ident=null,selectedDoc=null,models=[],defaults={},saved=null,connected=false,pending=false,selection=0,audioKey=null,auditionURL=null;
-  const numeric=['speaker_id','style_weight','speed','noise','noise_w','pitch_scale','intonation_scale'];
+  let connectionSerial=0,usageBusy=false;
+  async function usage(){
+    if(usageBusy)return;
+    usageBusy=true;
+    try{const u=await request('/api/tts/usage');$('tts-usage').textContent=`${u.month}の送信計上量：${u.used.toLocaleString()} / 上限 ${u.limit.toLocaleString()}文字（残り ${u.remaining.toLocaleString()}文字）・${u.project}・米国太平洋時間`;}
+    catch(e){$('tts-usage').textContent=e.message;}finally{usageBusy=false;}
+  }
   const notice=text=>$('tts-message').textContent=text;
   function active(){return selectedDoc?.busy==='WAV';}
   function enable(){
     $('tts-fields').disabled=!connected||!models.length||pending||!!selectedDoc?.busy;
     $('tts-production-fields').disabled=!ident||!connected||!models.length||pending||!!selectedDoc?.busy;
     $('tts-generate').disabled=!selectedDoc?.assets?.text;
-    $('tts-save').disabled=!ident;
+    $('tts-save').disabled=!ident||!connected||pending||!!selectedDoc?.busy;
     $('tts-stop').hidden=!active();
     $('tts-stop').disabled=!!selectedDoc?.audio_run?.stop_requested;
   }
@@ -17,22 +23,16 @@
     for(const [id,name] of entries){const option=node('option',name);option.value=id;element.append(option);}
     if(entries.some(([id])=>String(id)===String(value)))element.value=value;
   }
-  function modelChildren(settings={}){
-    const model=models.find(m=>m.id===$('tts-model').value);
-    choices($('tts-speaker'),(model?.speakers||[]).map(s=>[s.id,s.name]),settings.speaker_id);
-    choices($('tts-style'),(model?.styles||[]).map(s=>[s,s]),settings.style||'Neutral');
-  }
   function fill(settings){
+    if(settings&&settings.engine!=='google')settings=null;
     const source={...defaults,...settings};
-    choices($('tts-model'),models.map(m=>[m.id,m.name]),source.model_id);modelChildren(source);
-    for(const key of numeric.filter(k=>k!=='speaker_id'))if(source[key]!==undefined)form.elements.namedItem(key).value=source[key];
-    $('tts-weight-range').value=$('tts-weight').value;$('tts-speed-range').value=$('tts-speed').value;
+    choices($('tts-model'),models.map(m=>[m.id,m.name]),source.model_id);
+    $('tts-speed').value=source.speed??1;$('tts-speed-range').value=$('tts-speed').value;
+    $('tts-pitch').value=source.pitch??0;$('tts-pitch-range').value=$('tts-pitch').value;
     if(source.model_id&&!models.some(m=>m.id===source.model_id))notice('保存済みモデルがありません。Modelを選択してください。');
   }
   function payload(){
-    const settings={};
-    for(const key of ['model_id','style',...numeric]){const value=form.elements.namedItem(key).value;settings[key]=numeric.includes(key)?Number(value):value;}
-    return {settings,max_chunk_chars:Number($('tts-max-chars').value)};
+    return {settings:{engine:'google',model_id:$('tts-model').value,speaker_id:0,style:'Neutral',speed:Number($('tts-speed').value),pitch:Number($('tts-pitch').value)},max_chunk_chars:Number($('tts-max-chars').value)};
   }
   function durationText(seconds){const minutes=Math.ceil(Math.max(0,seconds)/60);return minutes>=60?`${Math.floor(minutes/60)}時間${minutes%60}分`:`${minutes}分`;}
   function render(){
@@ -77,27 +77,43 @@
     if(mp3){$('mp3-info').textContent=`${`${Math.floor(mp3.duration/3600)}時間${Math.floor(mp3.duration%3600/60)}分${Math.floor(mp3.duration%60)}秒`} / ${(mp3.size_bytes/1024/1024).toFixed(1)} MB / 96 kbps / mono`;$('mp3-download').href=`/api/documents/${ident}/tts/mp3?download=true`;}
     enable();
   }
-  function changed(){}
+  function changed(){$('tts-estimate-result').textContent='';}
   $('mp3-generate').onclick=async()=>{try{await request(`/api/documents/${ident}/tts/mp3`,{method:'POST'});await refresh();}catch(e){$('mp3-message').textContent=e.message;}};
   $('mp3-delete').onclick=async()=>{try{await request(`/api/documents/${ident}/tts/mp3`,{method:'DELETE'});await refresh();}catch(e){$('mp3-message').textContent=e.message;}};
   async function connect(){
+    const serial=++connectionSerial,selectionAtStart=selection;
+    const draft=connected?payload().settings:saved;
+    connected=false;enable();
     $('tts-health').textContent='接続確認中…';
     try{const health=await request('/api/tts/health');if(!health.ready)throw new Error(health.message);
-      const result=await request('/api/tts/models');const draft=connected&&ident?payload().settings:saved;
-      models=result.models;defaults=result.defaults;connected=true;fill(draft);
-      $('tts-health').textContent=models.length?'Style-Bert-VITS2: 利用可能':'利用可能なモデルがありません。';
-    }catch(e){connected=false;$('tts-health').textContent=e.message;}enable();
+      const result=await request('/api/tts/models');
+      if(serial!==connectionSerial)return;
+      models=result.models;defaults=result.defaults;connected=true;fill(selection!==selectionAtStart?saved:draft);
+      $('tts-health').textContent=models.length?`${health.engine}: 利用可能`:'利用可能なモデルがありません。';
+    }catch(e){if(serial!==connectionSerial)return;connected=false;$('tts-health').textContent=e.message;}enable();usage();
   }
   window.ttsUI={
-    selectDocument(document){selection++;ident=document.id;selectedDoc=document;saved=document.tts_settings||null;$('tts-max-chars').value=document.tts_max_chars||300;fill(saved);render();},
+    selectDocument(document){selection++;ident=document.id;selectedDoc=document;saved=document.tts_settings||null;$('tts-max-chars').value=document.tts_max_chars||300;fill(saved);changed();render();},
     refreshDocument(document){if(document.id!==ident)return;selectedDoc=document;render();}
   };
-  $('tts-connect').onclick=connect;$('tts-model').onchange=()=>{modelChildren();changed();};
-  for(const [range,number] of [['tts-weight-range','tts-weight'],['tts-speed-range','tts-speed']]){
+  $('tts-connect').onclick=()=>connect();$('tts-model').onchange=changed;
+  for(const [range,number] of [['tts-speed-range','tts-speed'],['tts-pitch-range','tts-pitch']]){
     $(range).oninput=()=>{$(number).value=$(range).value;changed();};$(number).oninput=()=>{$(range).value=$(number).value;changed();};
   }
   form.addEventListener('input',changed);
+  $('tts-max-chars').addEventListener('input',changed);
+  async function estimate(){
+    const target=ident,serial=selection,body=payload();
+    $('tts-estimate-result').textContent='送信予定文字数を確認中…';
+    const result=await request(`/api/documents/${target}/tts/estimate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(serial===selection){
+      $('tts-estimate-result').textContent=`本文 ${result.total_characters.toLocaleString()}文字 / 新規送信 ${result.send_characters.toLocaleString()}文字 / 再利用 ${result.reused} chunk${result.usage?` / 今月の残り ${result.usage.remaining.toLocaleString()}文字`:''}`;
+    }
+    return result;
+  }
+  $('tts-estimate').onclick=async()=>{try{await estimate();}catch(e){$('tts-estimate-result').textContent=e.message;}};
   $('tts-audition').onclick=async()=>{
+    if(!form.reportValidity())return;
     const text=$('tts-audition-text').value;
     if(!text.trim()||Array.from(text).length>150){$('tts-audition-message').textContent='1〜150文字の文章を入力してください。';return;}
     const settings=payload().settings;
@@ -108,9 +124,9 @@
       const blob=await response.blob(),audio=$('tts-audition-audio');audio.pause();
       if(auditionURL)URL.revokeObjectURL(auditionURL);
       auditionURL=URL.createObjectURL(blob);audio.src=auditionURL;audio.hidden=false;audio.load();
-      $('tts-audition-message').textContent=`試聴音声ができました。Speed ${settings.speed} / Intonation ${settings.intonation_scale}。再生して確認してください。`;
+      $('tts-audition-message').textContent=`試聴音声ができました。Speed ${settings.speed} / ピッチ ${settings.pitch}。再生して確認してください。`;
     }catch(e){$('tts-audition-message').textContent=e.message;}
-    finally{pending=false;enable();}
+    finally{pending=false;enable();usage();}
   };
   $('tts-save').onclick=async()=>{
     if(!form.reportValidity()||!ident)return;const target=ident,serial=selection;
@@ -122,11 +138,18 @@
     e.preventDefault();if(e.submitter!==$('tts-generate')||!ident||pending||!form.reportValidity()||!$('tts-production-form').reportValidity())return;
     if(dirty){notice('未保存の本文があります。保存し、最終テキストを再生成してください。');return;}
     const target=ident,serial=selection,body=payload();pending=true;enable();
-    try{if(!selectedDoc.final_current)await request(`/api/documents/${target}/final`,{method:'POST'});await request(`/api/documents/${target}/tts/wav`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(serial===selection)saved=body.settings;await refresh();}
+    try{if(!selectedDoc.final_current)await request(`/api/documents/${target}/final`,{method:'POST'});
+      {
+        const plan=await request(`/api/documents/${target}/tts/estimate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        if(serial===selection)$('tts-estimate-result').textContent=`今回の送信予定 ${plan.send_characters.toLocaleString()}文字 / 再利用 ${plan.reused} chunk`;
+        if(plan.send_characters>plan.usage.remaining)throw new Error(`送信予定 ${plan.send_characters.toLocaleString()}文字が今月の残り ${plan.usage.remaining.toLocaleString()}文字を超えています。`);
+      }
+      await request(`/api/documents/${target}/tts/wav`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(serial===selection)saved=body.settings;await refresh();}
     catch(error){await refresh();if(serial===selection)notice(error.message);}
     finally{pending=false;enable();}
   };
   $('tts-stop').onclick=async()=>{try{await request(`/api/documents/${ident}/tts/stop`,{method:'POST'});await refresh();}catch(e){notice(e.message);}};
   $('tts-review').onclick=()=>{const number=selectedDoc?.audio_run?.long_sentence?.page_number;if(number)window.openReviewPage(number);};
   connect();
+  setInterval(()=>{if(!document.hidden)usage();},10000);
 })();
